@@ -12,7 +12,6 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
-import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -29,9 +28,8 @@ public class AnalyticsService {
     private UserRepository userRepository;
 
     public DashboardStats getDashboardStats() {
-        // Calculate current month stats
         LocalDateTime now = LocalDateTime.now();
-        LocalDateTime startOfMonth = now.withDayOfMonth(1).withHour(0).withMinute(0).withSecond(0);
+        LocalDateTime startOfMonth = now.withDayOfMonth(1).withHour(0).withMinute(0).withSecond(0).withNano(0);
         LocalDateTime startOfPrevMonth = startOfMonth.minusMonths(1);
 
         List<Order> currentMonthOrders = orderRepository.findByCreatedAtBetween(startOfMonth, now);
@@ -39,32 +37,34 @@ public class AnalyticsService {
 
         BigDecimal currentRevenue = currentMonthOrders.stream()
                 .map(Order::getTotal)
+                .filter(Objects::nonNull)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         BigDecimal prevRevenue = prevMonthOrders.stream()
                 .map(Order::getTotal)
+                .filter(Objects::nonNull)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        // Calculate growth percentages
         double revenueGrowth = calculateGrowth(prevRevenue, currentRevenue);
-        
-        int totalProducts = productRepository.findAll().size();
-        int totalOrders = currentMonthOrders.size();
-        int activeUsers = userRepository.findByStatus("Active").size();
-        
-        int prevMonthProducts = totalProducts - 50; // Mock data, in real app would track product creation dates
-        int prevMonthOrders = prevMonthOrders.size();
-        int prevMonthUsers = activeUsers - 10; // Mock data
-        
-        double productGrowth = calculateGrowth(prevMonthProducts, totalProducts);
-        double orderGrowth = calculateGrowth(prevMonthOrders, totalOrders);
-        double userGrowth = calculateGrowth(prevMonthUsers, activeUsers);
+
+        long totalProducts = productRepository.count();
+        long totalOrders = currentMonthOrders.size();
+        long activeUsers = userRepository.countByStatus("Active");
+
+        LocalDateTime startOfPrevMonthEnd = startOfMonth.minusSeconds(1);
+        long prevMonthProducts = productRepository.countByCreatedAtBefore(startOfMonth);
+        long prevMonthOrderCount = prevMonthOrders.size(); // Use distinct variable name
+        long prevMonthUsers = userRepository.countByStatusAndCreatedAtBefore("Active", startOfMonth);
+
+        double productGrowth = calculateGrowth((int) prevMonthProducts, (int) totalProducts);
+        double orderGrowth = calculateGrowth((int) prevMonthOrderCount, (int) totalOrders);
+        double userGrowth = calculateGrowth((int) prevMonthUsers, (int) activeUsers);
 
         return new DashboardStats(
                 currentRevenue,
-                totalProducts,
-                totalOrders,
-                activeUsers,
+                (int) totalProducts,
+                (int) totalOrders,
+                (int) activeUsers,
                 revenueGrowth,
                 productGrowth,
                 orderGrowth,
@@ -73,32 +73,27 @@ public class AnalyticsService {
     }
 
     public List<Map<String, Object>> getSalesData() {
-        // Get sales data for the last 12 months
         LocalDateTime now = LocalDateTime.now();
         LocalDateTime oneYearAgo = now.minusYears(1);
-        
+
         List<Order> orders = orderRepository.findByCreatedAtBetween(oneYearAgo, now);
-        
-        // Group by month
+
         Map<String, BigDecimal> monthlySales = new LinkedHashMap<>();
         Map<String, BigDecimal> monthlyTargets = new LinkedHashMap<>();
-        
-        // Initialize months
+
         for (int i = 0; i < 12; i++) {
             LocalDateTime date = now.minusMonths(i);
             String month = date.getMonth().toString().substring(0, 3);
             monthlySales.put(month, BigDecimal.ZERO);
-            // Set arbitrary targets for demo purposes
             monthlyTargets.put(month, BigDecimal.valueOf(5000 + Math.random() * 2000));
         }
-        
-        // Populate with actual sales
+
         for (Order order : orders) {
             String month = order.getCreatedAt().getMonth().toString().substring(0, 3);
-            monthlySales.put(month, monthlySales.getOrDefault(month, BigDecimal.ZERO).add(order.getTotal()));
+            BigDecimal total = order.getTotal() != null ? order.getTotal() : BigDecimal.ZERO;
+            monthlySales.put(month, monthlySales.getOrDefault(month, BigDecimal.ZERO).add(total));
         }
-        
-        // Convert to list of maps for the response
+
         List<Map<String, Object>> result = new ArrayList<>();
         for (String month : monthlySales.keySet()) {
             Map<String, Object> entry = new HashMap<>();
@@ -107,23 +102,19 @@ public class AnalyticsService {
             entry.put("target", monthlyTargets.get(month));
             result.add(entry);
         }
-        
-        // Sort by month chronologically
+
         Collections.reverse(result);
-        
         return result;
     }
 
     public List<Map<String, Object>> getProductPerformance() {
         List<Product> products = productRepository.findAll();
         List<Order> recentOrders = orderRepository.findByCreatedAtBetween(
-                LocalDateTime.now().minusMonths(3), 
+                LocalDateTime.now().minusMonths(3),
                 LocalDateTime.now()
         );
-        
-        // Calculate revenue per product
+
         Map<String, BigDecimal> productRevenue = new HashMap<>();
-        
         for (Order order : recentOrders) {
             order.getItems().forEach(item -> {
                 String productId = item.getProductId();
@@ -131,8 +122,7 @@ public class AnalyticsService {
                 productRevenue.put(productId, productRevenue.getOrDefault(productId, BigDecimal.ZERO).add(itemTotal));
             });
         }
-        
-        // Create result with product names
+
         List<Map<String, Object>> result = new ArrayList<>();
         for (Product product : products) {
             if (productRevenue.containsKey(product.getId())) {
@@ -142,65 +132,55 @@ public class AnalyticsService {
                 result.add(entry);
             }
         }
-        
-        // Sort by revenue descending and take top 5
-        result.sort((a, b) -> ((BigDecimal)b.get("revenue")).compareTo((BigDecimal)a.get("revenue")));
+
+        result.sort((a, b) -> ((BigDecimal) b.get("revenue")).compareTo((BigDecimal) a.get("revenue")));
         return result.stream().limit(5).collect(Collectors.toList());
     }
 
     public List<Map<String, Object>> getInventoryTrends() {
-        // Mock inventory trend data for the last 12 months
         List<Map<String, Object>> result = new ArrayList<>();
         LocalDateTime now = LocalDateTime.now();
-        
+
         for (int i = 0; i < 12; i++) {
             LocalDateTime date = now.minusMonths(i);
             String month = date.getMonth().toString().substring(0, 3);
-            
             Map<String, Object> entry = new HashMap<>();
             entry.put("month", month);
-            // Generate some realistic looking inventory data
-            entry.put("stock", 100 + (int)(Math.sin(i * 0.5) * 50) + (int)(Math.random() * 20));
+            entry.put("stock", 100 + (int) (Math.sin(i * 0.5) * 50) + (int) (Math.random() * 20));
             result.add(entry);
         }
-        
-        // Sort chronologically
+
         Collections.reverse(result);
-        
         return result;
     }
 
     public List<Map<String, Object>> getCustomerMetrics() {
-        // Mock customer metrics data
         List<Map<String, Object>> result = new ArrayList<>();
-        
-        // New customers (last 30 days)
+
         Map<String, Object> newCustomers = new HashMap<>();
         newCustomers.put("name", "New Customers");
         newCustomers.put("value", 540);
         newCustomers.put("color", "#3b82f6");
         result.add(newCustomers);
-        
-        // Returning customers (made more than one order)
+
         Map<String, Object> returningCustomers = new HashMap<>();
         returningCustomers.put("name", "Returning Customers");
         returningCustomers.put("value", 620);
         returningCustomers.put("color", "#10b981");
         result.add(returningCustomers);
-        
-        // Inactive customers (no orders in 90 days)
+
         Map<String, Object> inactiveCustomers = new HashMap<>();
         inactiveCustomers.put("name", "Inactive Customers");
-        inactiveCustomers.put("value", 210);
-        inactiveCustomers.put("color", "#f59e0b");
+        newCustomers.put("value", 210);
+        newCustomers.put("color", "#f59e0b");
         result.add(inactiveCustomers);
-        
+
         return result;
     }
 
     private double calculateGrowth(int previous, int current) {
         if (previous == 0) return 100.0;
-        return ((double)(current - previous) / previous) * 100.0;
+        return ((double) (current - previous) / previous) * 100.0;
     }
 
     private double calculateGrowth(BigDecimal previous, BigDecimal current) {

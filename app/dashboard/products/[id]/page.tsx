@@ -77,7 +77,7 @@ export default function ProductDetailsPage() {
       }
     }
 
-    fetchProduct()
+    // fetchProduct()
   }, [productId, toast])
 
   const handleDelete = async () => {
